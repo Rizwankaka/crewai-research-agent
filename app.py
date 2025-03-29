@@ -1,7 +1,17 @@
 import os
 import sys
 
-# Set environment variables before importing any other packages
+# Detect Streamlit Cloud environment
+def is_streamlit_cloud():
+    """Detect if running in Streamlit Cloud environment"""
+    return os.environ.get('IS_STREAMLIT_CLOUD', '') == 'true' or os.getenv('STREAMLIT_RUNTIME', '') != ''
+
+# Set environment flag for other modules to detect
+if is_streamlit_cloud():
+    os.environ['IS_STREAMLIT_CLOUD'] = 'true'
+    print("Running in Streamlit Cloud environment")
+
+# Set environment variables to disable problematic dependencies
 os.environ["CHROMA_DB_IMPL"] = "duckdb+parquet"
 os.environ["LANGCHAIN_TRACING_V2"] = "false"
 os.environ["LANGCHAIN_ENDPOINT"] = ""
@@ -15,7 +25,14 @@ from src.ui import (
     show_result
 )
 from src.utils import load_environment, get_api_key
-from src.agents import ResearchCrew  # Import ResearchCrew at the top level
+
+# Import ResearchCrew carefully with error handling
+try:
+    from src.agents import ResearchCrew
+    research_crew_available = True
+except Exception as e:
+    research_crew_available = False
+    print(f"Error importing ResearchCrew: {e}")
 
 # Initialize session state
 if 'gemini_api_key' not in st.session_state:
@@ -27,9 +44,6 @@ if 'topic' not in st.session_state:
 
 # Load environment variables
 load_environment()
-
-# Add a check for deployment
-is_deployed = os.getenv("DEPLOYED", "false").lower() == "true"
 
 # Configure page
 setup_page_config()
@@ -51,81 +65,90 @@ if generate_button:
         st.error("⚠️ Please enter a topic to generate content about.")
     elif not gemini_api_key:
         st.error("⚠️ Please enter your GEMINI API key.")
-    elif not serper_api_key:
+    elif not serper_api_key and not is_streamlit_cloud():
+        # Only require Serper API key for local environment
         st.error("⚠️ Please enter your SERPER API key for web research.")
     else:
         # Set up the environment variables for the API keys
         os.environ["GEMINI_API_KEY"] = gemini_api_key
-        os.environ["SERPER_API_KEY"] = serper_api_key
+        os.environ["SERPER_API_KEY"] = serper_api_key or ""
         
         with st.spinner('🔍 AI agents are researching and writing content... This may take a few minutes.'):
-            try:
-                # Initialize the research crew and generate content
-                research_crew = ResearchCrew(
-                    topic=topic, 
-                    model="gemini/gemini-2.0-flash", 
-                    temperature=temperature
-                )
-                
-                # Generate content with the provided API key
-                result = research_crew.generate_content(serper_api_key=serper_api_key)
-                
-                # Show the result
-                show_result(result)
-                
-            except Exception as e:
-                error_message = str(e).lower()
-                if "sqlite" in error_message or "chroma" in error_message:
-                    st.error(f"🚨 SQLite/ChromaDB compatibility error: {str(e)}")
-                    st.info("Attempting to generate content with alternative method...")
+            # Determine if we should use simplified approach
+            use_simplified = is_streamlit_cloud() or not research_crew_available
+            
+            if use_simplified:
+                try:
+                    # Use simplified generator for Streamlit Cloud
+                    from src.utils.simplified_generator import generate_simple_content
+                    st.info("Using simplified content generator optimized for cloud deployment...")
+                    result = generate_simple_content(topic, gemini_api_key)
+                    show_result(result)
+                except Exception as e:
+                    st.error(f"🚨 Error in simplified generation: {str(e)}")
+            else:
+                # Use full CrewAI for local environment
+                try:
+                    # Initialize the research crew and generate content
+                    research_crew = ResearchCrew(
+                        topic=topic, 
+                        model="gemini/gemini-2.0-flash", 
+                        temperature=temperature
+                    )
                     
-                    try:
-                        # Set environment variables to completely disable ChromaDB
-                        os.environ["CREWAI_MEMORY"] = "false"
-                        os.environ["USE_SIMPLIFIED_MODE"] = "true"
+                    # Generate content with the provided API key
+                    result = research_crew.generate_content(serper_api_key=serper_api_key)
+                    
+                    # Show the result
+                    show_result(result)
+                    
+                except Exception as e:
+                    error_message = str(e).lower()
+                    if "sqlite" in error_message or "chroma" in error_message:
+                        st.error(f"🚨 SQLite/ChromaDB compatibility error: {str(e)}")
+                        st.info("Attempting to generate content with alternative method...")
                         
-                        # Import simplified module for content generation
-                        from src.utils.simplified_generator import generate_simple_content
-                        
-                        result = generate_simple_content(topic, gemini_api_key)
-                        show_result(result)
-                    except Exception as fallback_error:
-                        st.error(f"Could not generate content: {str(fallback_error)}")
-                        
-                elif "serper" in error_message or "search" in error_message or "api key" in error_message:
-                    st.error(f"🚨 Error with Serper API: {str(e)}")
-                    st.warning("""
-                        #### Serper API Issue Detected
-                        The Serper search tool failed. This might be due to:
-                        - Invalid Serper API key
-                        - Exceeded API usage limits
-                        - Network connectivity issues
-                        
-                        The application will try to continue with limited research capabilities.
-                    """)
-                    # Try again without Serper if possible
-                    try:
-                        st.info("🔄 Attempting to generate content without web search...")
-                        # Import ResearchCrew here to avoid early initialization issues
-                        from src.agents import ResearchCrew
-                        
-                        research_crew = ResearchCrew(
-                            topic=topic, 
-                            model="gemini/gemini-2.0-flash", 
-                            temperature=temperature
-                        )
-                        result = research_crew.generate_content(serper_api_key=None)
-                        show_result(result)
-                    except Exception as fallback_error:
-                        st.error(f"🚨 Could not generate content: {str(fallback_error)}")
-                else:
-                    st.error(f"🚨 An error occurred: {str(e)}")
-                    st.markdown("""
-                        #### Troubleshooting tips:
-                        - Check if your API keys are valid
-                        - Make sure your topic is clear and specific
-                        - Try again with a different topic
-                    """)
+                        try:
+                            from src.utils.simplified_generator import generate_simple_content
+                            result = generate_simple_content(topic, gemini_api_key)
+                            show_result(result)
+                        except Exception as fallback_error:
+                            st.error(f"Could not generate content: {str(fallback_error)}")
+                    
+                    elif "serper" in error_message or "search" in error_message or "api key" in error_message:
+                        st.error(f"🚨 Error with Serper API: {str(e)}")
+                        st.warning("""
+                            #### Serper API Issue Detected
+                            The Serper search tool failed. This might be due to:
+                            - Invalid Serper API key
+                            - Exceeded API usage limits
+                            - Network connectivity issues
+                            
+                            The application will try to continue with limited research capabilities.
+                        """)
+                        # Try again without Serper if possible
+                        try:
+                            st.info("🔄 Attempting to generate content without web search...")
+                            # Import ResearchCrew here to avoid early initialization issues
+                            from src.agents import ResearchCrew
+                            
+                            research_crew = ResearchCrew(
+                                topic=topic, 
+                                model="gemini/gemini-2.0-flash", 
+                                temperature=temperature
+                            )
+                            result = research_crew.generate_content(serper_api_key=None)
+                            show_result(result)
+                        except Exception as fallback_error:
+                            st.error(f"🚨 Could not generate content: {str(fallback_error)}")
+                    else:
+                        st.error(f"🚨 An error occurred: {str(e)}")
+                        st.markdown("""
+                            #### Troubleshooting tips:
+                            - Check if your API keys are valid
+                            - Make sure your topic is clear and specific
+                            - Try again with a different topic
+                        """)
 
 # Display a placeholder for content if no generation has been started
 else:

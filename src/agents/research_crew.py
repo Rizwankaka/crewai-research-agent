@@ -1,14 +1,54 @@
 import os
 import sys
-from crewai import Agent, Task, Crew
+import platform
 
-# Handle different LLM imports based on environment
-try:
-    from crewai import LLM
-    use_crewai_llm = True
-except ImportError:
-    use_crewai_llm = False
+# Check if running in Streamlit Cloud environment
+def is_streamlit_cloud():
+    """Detect if running in Streamlit Cloud environment"""
+    return os.environ.get('IS_STREAMLIT_CLOUD', '') == 'true' or os.getenv('STREAMLIT_RUNTIME', '') != ''
+
+# Import conditionally based on environment
+if is_streamlit_cloud():
+    # Running in Streamlit Cloud - use simplified approach
+    print("Detected Streamlit Cloud environment. Using simplified approach without ChromaDB dependency.")
+    # Define dummy classes to prevent import errors
+    class DummyCrew:
+        def __init__(self, agents, tasks, verbose=True):
+            self.agents = agents
+            self.tasks = tasks
+            self.verbose = verbose
+        
+        def kickoff(self, inputs):
+            return "Error: CrewAI is not available in this environment due to SQLite compatibility issues."
     
+    class DummyAgent:
+        def __init__(self, role, goal, backstory, allow_delegation=False, verbose=True, tools=None, llm=None):
+            self.role = role
+            self.goal = goal
+            self.backstory = backstory
+    
+    class DummyTask:
+        def __init__(self, description, expected_output, agent):
+            self.description = description
+            self.expected_output = expected_output
+            self.agent = agent
+    
+    Agent = DummyAgent
+    Task = DummyTask
+    Crew = DummyCrew
+    LLM = lambda model, temperature: None
+else:
+    # Normal environment - import real classes
+    try:
+        from crewai import Agent, Task, Crew, LLM
+    except ImportError:
+        print("Error importing CrewAI. Please install with: pip install crewai")
+        # Define dummy classes as fallback
+        class DummyCrew:
+            def kickoff(self, inputs):
+                return "CrewAI not installed"
+        Agent, Task, Crew, LLM = object, object, DummyCrew, lambda model, temperature: None
+
 # Try to import SerperDevTool, with fallback
 try:
     from crewai_tools import SerperDevTool
@@ -16,6 +56,10 @@ try:
 except ImportError:
     serper_available = False
     print("Warning: SerperDevTool not available")
+    # Create dummy SerperDevTool
+    class SerperDevTool:
+        def __init__(self, api_key, **kwargs):
+            self.api_key = api_key
 
 class ResearchCrew:
     def __init__(self, topic, model="gemini/gemini-2.0-flash", temperature=0.7):
@@ -23,8 +67,8 @@ class ResearchCrew:
         self.model = model
         self.temperature = temperature
         
-        # Initialize LLM based on availability
-        if use_crewai_llm:
+        # Initialize LLM only if not in Streamlit Cloud
+        if not is_streamlit_cloud():
             try:
                 self.llm = LLM(model=self.model, temperature=self.temperature)
             except Exception as e:
@@ -32,9 +76,13 @@ class ResearchCrew:
                 self.llm = None
         else:
             self.llm = None
-        
+            
     def setup_agents_and_tasks(self, serper_api_key=None):
         """Create and configure all necessary agents and tasks"""
+        # For Streamlit Cloud, redirect to simplified approach immediately
+        if is_streamlit_cloud():
+            return None
+            
         # Initialize search tool if API key is provided and tool is available
         search_tool = None
         if serper_api_key and serper_available:
@@ -78,7 +126,7 @@ class ResearchCrew:
             print(f"Error creating crew: {e}")
             # If we can't create a proper crew, return a simple error message
             return None
-    
+            
     def _create_research_analyst(self, search_tool=None):
         """Create research analyst agent"""
         tools = [search_tool] if search_tool and search_tool is not None else []
@@ -167,6 +215,17 @@ class ResearchCrew:
     
     def generate_content(self, serper_api_key=None):
         """Execute the crew to generate content"""
+        # For Streamlit Cloud, use simplified generator instead
+        if is_streamlit_cloud():
+            try:
+                from src.utils.simplified_generator import generate_simple_content
+                # Get the API key from environment if not provided
+                gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
+                return generate_simple_content(self.topic, gemini_api_key)
+            except Exception as e:
+                return f"Error generating content: {str(e)}"
+        
+        # Regular approach for local environment
         try:
             crew = self.setup_agents_and_tasks(serper_api_key)
             if crew is None:
