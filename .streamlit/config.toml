@@ -1,0 +1,25 @@
+[global]
+# Streamlit settings
+disableWatchdogWarning = true
+
+[server]
+# Server settings
+enableCORS = true
+enableXsrfProtection = true
+enableWebsocketCompression = true
+
+[theme]
+# Theme settings
+primaryColor = "#FF4B4B"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#262730"
+textColor = "#FAFAFA"
+font = "sans serif"
+
+[environment]
+# Set environment variables for Streamlit Cloud
+IS_STREAMLIT_CLOUD = true
+DISABLE_CHROMADB = true
+CHROMA_DB_IMPL = "duckdb+parquet"
+CREWAI_DISABLE_CHROMA = "true"
+USE_SIMPLIFIED_MODE = "true"
