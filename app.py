@@ -1,9 +1,11 @@
 import os
 import sys
 
-# No CrewAI or ChromaDB imports at all in the main file when deployed
-# We'll only import the simplified generator and UI components
+# Set Streamlit Cloud marker for environment detection
+# This helps prevent ChromaDB/SQLite initialization on Streamlit Cloud
+os.environ["IS_STREAMLIT_CLOUD"] = "true"
 
+# No CrewAI or ChromaDB imports at all in the main file when deployed
 import streamlit as st
 from src.ui import (
     setup_page_config,
@@ -12,7 +14,6 @@ from src.ui import (
     show_result
 )
 from src.utils import load_environment, get_api_key
-from src.utils.simplified_generator import generate_simple_content
 
 # Initialize session state
 if 'gemini_api_key' not in st.session_state:
@@ -53,15 +54,32 @@ if generate_button:
         
         with st.spinner('🔍 AI agents are researching and writing content... This may take a few minutes.'):
             try:
-                # Use simplified generator for all deployments
-                st.info("Using content generator optimized for cloud deployment...")
-                result = generate_simple_content(topic, gemini_api_key)
+                # Try to import ResearchCrew using our lazy loader
+                try:
+                    # Check if we're in Streamlit Cloud before attempting to import
+                    stream_runtime = os.getenv('STREAMLIT_RUNTIME', '')
+                    if stream_runtime:
+                        # Direct use of simplified generator in Streamlit Cloud
+                        from src.utils.simplified_generator import generate_simple_content
+                        st.info("Using content generator optimized for cloud deployment...")
+                        result = generate_simple_content(topic, gemini_api_key)
+                    else:
+                        # Use ResearchCrew with lazy loading for local environment
+                        from src.agents import ResearchCrew
+                        research_crew = ResearchCrew(topic=topic, model="gemini/gemini-2.0-flash", temperature=temperature)
+                        result = research_crew.generate_content(serper_api_key=serper_api_key)
+                except ImportError:
+                    # Fallback to simplified generator if import fails
+                    from src.utils.simplified_generator import generate_simple_content
+                    st.info("Using simplified content generation...")
+                    result = generate_simple_content(topic, gemini_api_key)
+                    
                 show_result(result)
             except Exception as e:
                 st.error(f"🚨 Error generating content: {str(e)}")
                 st.markdown("""
                     #### Troubleshooting tips:
-                    - Check if your GEMINI API key is valid
+                    - Check if your API key is valid
                     - Make sure your topic is clear and specific
                     - Try again with a different topic
                 """)
